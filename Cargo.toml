@@ -1,0 +1,18 @@
+[package]
+name = "gd-rtti"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+read-process-memory = "0.1.5"
+rustyline = "10.0.0"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+  "memoryapi",
+  "processthreadsapi",
+  "psapi",
+  "winbase",
+] }
