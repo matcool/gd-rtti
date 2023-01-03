@@ -1,3 +1,7 @@
+#![feature(is_some_and)]
+#![feature(inherent_associated_types)]
+#![feature(iter_intersperse)]
+
 use std::fmt::Debug;
 
 use read_process_memory::Pid;
@@ -37,12 +41,10 @@ impl Program {
             }
             "ptr" => {
                 let address = self.fetch_address(args).str_err()?;
-                println!("{address:08x}");
+                println!("{}", self.format_addr(address));
             }
             "name" => {
-                let Some(process) = &self.process else {
-                    return Err(ProgramError::NoProcess).str_err()
-                };
+                let process = self.process().str_err()?;
                 let address = self.fetch_address(args).str_err()?;
                 let name = process.read_class_name(address).str_err()?;
                 println!("{name}");
@@ -51,15 +53,24 @@ impl Program {
                 let (size, address) = args.split_once(' ').ok_or(String::from("Missing args"))?;
                 let size = size.parse::<usize>().str_err()?;
                 let address = self.fetch_address(address).str_err()?;
-                let Some(process) = &self.process else {
-                    return Err(ProgramError::NoProcess).str_err()
-                };
+                let process = self.process().str_err()?;
                 for offset in (0..size).step_by(process.pointer_size()) {
                     let Ok(address) = process.read_ptr(address + offset) else {
                         continue;
                     };
-                    if let Ok(name) = process.read_class_name(address) {
-                        println!("[{offset:>3x}] {name}");
+                    if let Ok(name) = process.read_vtable_info(address) {
+                        let Ok(name) = process.demangle_class_name(name.as_str()) else {
+                            break
+                        };
+                        println!(
+                            "[{offset:>3x}] vtable: {name} ({})",
+                            self.format_addr(address)
+                        );
+                    } else if let Ok(name) = process.read_class_name(address) {
+                        let Ok(name) = process.demangle_class_name(name.as_str()) else {
+                            break
+                        };
+                        println!("[{offset:>3x}] {name} ({})", self.format_addr(address));
                     }
                 }
             }
@@ -70,14 +81,25 @@ impl Program {
         Ok(())
     }
 
+    fn format_addr(&self, addr: usize) -> String {
+        if self.process.as_ref().is_some_and(|p| p.pointer_size() == 8) {
+            format!("{addr:016x}")
+        } else {
+            // default to 4 bytes because i cant be bothered to return a result
+            format!("{addr:08x}")
+        }
+    }
+
+    fn process(&self) -> Result<&Process, ProgramError> {
+        self.process.as_ref().ok_or(ProgramError::NoProcess)
+    }
+
     fn fetch_address(&self, command: &str) -> Result<usize, ProgramError> {
         let command = command.trim();
         if command.is_empty() {
             return Err(ProgramError::InvalidAddress);
         }
-        let Some(process) = &self.process else {
-            return Err(ProgramError::NoProcess)
-        };
+        let process = self.process()?;
         if command.starts_with('[') {
             let mut i = 0;
             let mut count = 1;
