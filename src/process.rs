@@ -60,6 +60,63 @@ pub fn fetch_base_address(handle: &ProcessHandle) -> std::io::Result<usize> {
     }
 }
 
+#[cfg(target_os = "macos")]
+// pass a mach_port_name_t !! i was too lazy to quality the type
+pub fn fetch_base_address(handle: u32) -> io::Result<usize> {
+    use mach::{
+        kern_return::KERN_SUCCESS,
+        message::mach_msg_type_number_t,
+        vm::mach_vm_region_recurse,
+        vm_types::{
+            vm_map_size_t,
+            vm_map_offset_t
+        },
+        vm_region::{
+            vm_region_submap_info,
+            vm_region_submap_info_t,
+            vm_region_recurse_info_t
+        }
+    };
+
+    let task = handle;
+    let mut vm_offset: vm_map_offset_t = 0;
+    let mut vmsize: vm_map_size_t = 0;
+    let mut nesting_depth: u32 = 0;
+
+    let mut vbr = vm_region_submap_info::default();
+    let mut vbrcount: mach_msg_type_number_t = 16;
+
+    if unsafe {
+        // these types are a mess
+        mach_vm_region_recurse(
+            task,
+            &mut vm_offset,
+            &mut vmsize,
+            &mut nesting_depth,
+            &mut vbr as vm_region_submap_info_t as vm_region_recurse_info_t,
+            &mut vbrcount)
+    } != KERN_SUCCESS {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(vm_offset.try_into().unwrap())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_handle_from_pid(pid: Pid) -> io::Result<u32> {
+    // copied from ProcessHandle, we want the native handle type though
+    use mach::{port::MACH_PORT_NULL, kern_return::KERN_SUCCESS};
+
+    let mut task = MACH_PORT_NULL;
+
+    if unsafe {
+        mach::traps::task_for_pid(mach::traps::mach_task_self(), pid, &mut task)
+    } != KERN_SUCCESS {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(task)
+}
 pub struct Process {
     base_address: usize,
     handle: ProcessHandle,
@@ -102,11 +159,13 @@ impl Process {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     pub fn try_new(pid: Pid) -> io::Result<Self> {
+        let handle = get_handle_from_pid(pid)?;
+
         Ok(Self {
-            base_address: 0,
-            handle: ProcessHandle::try_from(pid)?,
+            base_address: fetch_base_address(handle)?,
+            handle: ProcessHandle::try_from(handle)?,
             pointer_size: 8,
         })
     }
@@ -139,6 +198,14 @@ impl Process {
         Ok(u64::from_le_bytes(buf))
     }
 
+    pub fn read_i64(&self, addr: usize) -> ProcResult<i64> {
+        let mut buf = [0; 8];
+        self.handle
+            .copy_address(addr, &mut buf)
+            .map_err(|_| ProcessError::InvalidPointer)?;
+        Ok(i64::from_le_bytes(buf))
+    }
+
     pub fn read_ptr(&self, addr: usize) -> ProcResult<usize> {
         if self.pointer_size == 4 {
             self.read_u32(addr).map(|x| x as usize)
@@ -165,6 +232,43 @@ impl Process {
             addr += BUFFER_SIZE;
         }
         Ok(str)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn read_class_name(&self, addr: usize) -> ProcResult<String> {
+        let vtable = self.read_ptr(addr)?;
+        if vtable < 8 {
+            return Err(ProcessError::InvalidPointer);
+        }
+        let type_info = self.read_ptr(vtable - 8)?;
+        let name = self.read_ptr(type_info + 8)?;
+        self.read_c_str(name, 256)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn read_vtable_info(&self, vtable: usize) -> ProcResult<String> {
+        if vtable < 8 {
+            return Err(ProcessError::InvalidPointer);
+        }
+        let offset = self.read_i64(vtable - 16)?;
+        let type_info = self.read_ptr(vtable - 8)?;
+        let base_count = self.read_u32(type_info + 20)? as usize;
+        for i in 0..base_count {
+            let addr = type_info + 32 + i * 16;
+            let flags = self.read_u64(addr)?;
+            let class_offset = flags >> 8;
+            if class_offset == (-offset) as u64 {
+                let type_info = self.read_ptr(addr + 8)?;
+                let name = self.read_ptr(type_info + 8)?;
+                return self.read_c_str(name, 256)
+            }
+        }
+        Err(ProcessError::InvalidPointer)
+    }
+    
+    #[cfg(target_os = "macos")]
+    pub fn demangle_class_name(&self, name: &str) -> ProcResult<String> {
+        Ok(name.into())
     }
 
     #[cfg(windows)]
