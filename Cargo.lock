@@ -104,6 +104,7 @@ dependencies = [
 name = "gd-rtti"
 version = "0.1.0"
 dependencies = [
+ "mach",
  "read-process-memory",
  "rustyline",
  "winapi",

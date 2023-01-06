@@ -16,3 +16,6 @@ winapi = { version = "0.3", features = [
   "psapi",
   "winbase",
 ] }
+
+[target.'cfg(target_os="macos")'.dependencies]
+mach = "0.3"
