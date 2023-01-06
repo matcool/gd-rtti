@@ -237,7 +237,7 @@ impl Process {
     #[cfg(target_os = "macos")]
     pub fn read_class_name(&self, addr: usize) -> ProcResult<String> {
         let vtable = self.read_ptr(addr)?;
-        if vtable < 8 {
+        if vtable < 16 {
             return Err(ProcessError::InvalidPointer);
         }
         let type_info = self.read_ptr(vtable - 8)?;
@@ -247,23 +247,37 @@ impl Process {
 
     #[cfg(target_os = "macos")]
     pub fn read_vtable_info(&self, vtable: usize) -> ProcResult<String> {
-        if vtable < 8 {
+        fn get_class_offset(process: &Process, type_info: usize, i: usize) -> ProcResult<(u64, usize)> {
+            let addr = type_info + 24 + i * 16;
+            let base_type_info = process.read_ptr(addr)?;
+            let flags = process.read_u64(addr + 8)?;
+            let class_offset = flags >> 8;
+            Ok((class_offset, base_type_info))
+        }
+        fn look_for_offset(process: &Process, type_info: usize, offset: u64) -> ProcResult<usize> {
+            let base_count = process.read_u32(type_info + 20)? as usize;
+            for i in 0..base_count {
+                let (base_offset, base_type_info) = get_class_offset(process, type_info, i)?;
+                if base_offset == offset {
+                    return process.read_ptr(base_type_info + 8)
+                } else if i < base_count - 1 {
+                    let (base_offset, _) = get_class_offset(process, type_info, i + 1)?;
+                    // if the next base class has a higher offset, then recurse through the current one
+                    if base_offset > offset {
+                        return look_for_offset(process, base_type_info, offset)
+                    }
+                }
+            }
+            Err(ProcessError::InvalidRTTI)
+        }
+        if vtable < 16 {
             return Err(ProcessError::InvalidPointer);
         }
         let offset = self.read_i64(vtable - 16)?;
+        let offset = (-offset) as u64;
         let type_info = self.read_ptr(vtable - 8)?;
-        let base_count = self.read_u32(type_info + 20)? as usize;
-        for i in 0..base_count {
-            let addr = type_info + 32 + i * 16;
-            let flags = self.read_u64(addr)?;
-            let class_offset = flags >> 8;
-            if class_offset == (-offset) as u64 {
-                let type_info = self.read_ptr(addr + 8)?;
-                let name = self.read_ptr(type_info + 8)?;
-                return self.read_c_str(name, 256)
-            }
-        }
-        Err(ProcessError::InvalidPointer)
+        let name_ptr = look_for_offset(self, type_info, offset)?;
+        self.read_c_str(name_ptr, 256)
     }
     
     #[cfg(target_os = "macos")]
