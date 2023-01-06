@@ -15,10 +15,10 @@ jobs:
         config:
         - name: "win"
           os: windows-latest
-          out_paths: './build/release/gd-rtti.exe'
+          out_path: './target/release/gd-rtti.exe'
         - name: "mac"
           os: macos-latest
-          out_paths: './build/release/gd-rtti'
+          out_path: './target/release/gd-rtti'
     
     name: ${{ matrix.config.name }}
     runs-on: ${{ matrix.config.os }}
@@ -34,17 +34,9 @@ jobs:
     
     - name: Build
       run: cargo build --release
-      
-    - name: Move to output folder
-      shell: bash
-      working-directory: ${{ github.workspace }}
-      run: |
-        mkdir ./out
-        mv ${{ matrix.config.out_paths }} ./out
         
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v3
       with:
         name: ${{ matrix.config.name }}-binary
-        path: ./out/
+        path: ${{ matrix.config.out_path }}
 
